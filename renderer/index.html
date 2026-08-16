@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http: data:;" />
+  <title>播客随身听</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="wave-logo" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="brand-text">
+        <span class="brand-name">播客随身听</span>
+        <span class="brand-sub">PODCASTGO · 下载转码 · 一键导入设备</span>
+      </div>
+    </div>
+
+    <nav class="page-nav" id="pageNav" aria-label="页面切换">
+      <button data-page="podcast" class="page-nav-btn active">播客</button>
+      <button data-page="transcribe" class="page-nav-btn">转写</button>
+    </nav>
+
+    <div class="feed-add" id="feedAdd">
+      <div class="search-wrap">
+        <input id="feedUrl" type="text" spellcheck="false" autocomplete="off"
+               placeholder="搜索播客，或粘贴 RSS 订阅地址…" />
+        <div id="searchResults" class="search-results hidden"></div>
+      </div>
+      <button id="addFeedBtn" class="btn btn-primary">搜索</button>
+      <button id="hotBtn" class="btn btn-ghost" title="热门播客榜单">🔥 热门</button>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="refreshDrivesBtn" class="btn btn-ghost" title="重新扫描磁盘设备">刷新设备</button>
+      <button id="settingsBtn" class="btn btn-ghost">设置</button>
+    </div>
+  </header>
+
+  <!-- 页面一：播客（订阅 / 下载转码 / 导入） -->
+  <main id="pagePodcast" class="page">
+    <div class="columns">
+      <!-- 01 订阅 -->
+      <section class="col">
+        <div class="col-head">
+          <div>
+            <div class="eyebrow">01 · 订阅</div>
+            <h2 id="feedTitle">选择一个播客</h2>
+          </div>
+          <div class="col-tools">
+            <button id="selectAllBtn" class="btn btn-ghost btn-sm">全选</button>
+            <button id="addToQueueBtn" class="btn btn-primary btn-sm">下载并转码</button>
+          </div>
+        </div>
+        <div id="feedSwitcher" class="feed-switcher"></div>
+        <div id="episodes" class="list scroll"></div>
+      </section>
+
+      <!-- 02 下载转码 -->
+      <section class="col">
+        <div class="col-head">
+          <div>
+            <div class="eyebrow">02 · 下载转码</div>
+            <h2>任务队列</h2>
+          </div>
+          <button id="clearDoneBtn" class="btn btn-ghost btn-sm">清除已完成</button>
+        </div>
+        <div id="taskSummary" class="task-summary hidden"></div>
+        <div id="tasks" class="list scroll"></div>
+      </section>
+
+      <!-- 03 导入 -->
+      <section class="col">
+        <div class="col-head">
+          <div>
+            <div class="eyebrow">03 · 导入</div>
+            <h2>一键导入设备</h2>
+          </div>
+        </div>
+        <div class="import-body">
+          <div class="field-block">
+            <label class="field-label" for="driveSelect">目标设备</label>
+            <select id="driveSelect" class="select"></select>
+            <div class="drive-space hidden" id="driveSpace">
+              <div class="drive-space-track"><div class="drive-space-fill" id="driveSpaceFill"></div></div>
+              <div class="drive-space-label mono" id="driveSpaceLabel"></div>
+            </div>
+            <button id="pickFolderBtn" class="btn btn-ghost btn-sm">或选择文件夹…</button>
+            <label class="check-row">
+              <input type="checkbox" id="subfolderChk" checked />
+              <span>导入到子文件夹 <code id="subfolderName" class="mono"></code></span>
+            </label>
+          </div>
+
+          <div class="field-block library-block">
+            <div class="field-label-row">
+              <label class="field-label">媒体库中的 MP3</label>
+              <button id="openLibBtn" class="btn btn-ghost btn-sm">打开目录</button>
+            </div>
+            <div id="library" class="list scroll"></div>
+          </div>
+
+          <label class="switch-row">
+            <span class="switch">
+              <input type="checkbox" id="autoImportChk" />
+              <span class="slider"></span>
+            </span>
+            <span>下载完成后自动导入到所选设备</span>
+          </label>
+
+          <button id="importBtn" class="btn btn-import big">一键导入到设备</button>
+          <div class="import-progress" id="importProgress">
+            <div class="wavebar amber" id="importWave"></div>
+            <div class="import-status" id="importStatus"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- 页面二：转写（AI 逐字稿） -->
+  <main id="pageTranscribe" class="page hidden">
+    <div class="ts-grid">
+      <!-- 待转写音频 -->
+      <section class="col">
+        <div class="col-head">
+          <div>
+            <div class="eyebrow">Whisper</div>
+            <h2>待转写音频</h2>
+          </div>
+          <button id="tsPickAudioBtn" class="btn btn-ghost btn-sm">选择音频…</button>
+        </div>
+        <div class="ts-source-wrap">
+          <div id="tsSources" class="list scroll ts-source-list"></div>
+          <div class="ts-lib-block">
+            <div class="field-label-row">
+              <label class="field-label">从媒体库添加</label>
+              <button id="tsOpenLibBtn" class="btn btn-ghost btn-sm">打开目录</button>
+            </div>
+            <div id="tsLibrary" class="list scroll ts-lib-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 转写工作区 -->
+      <section class="col ts-work">
+        <div class="col-head">
+          <div>
+            <div class="eyebrow">逐字稿</div>
+            <h2 id="tsWorkTitle">选择音频，开始转写</h2>
+          </div>
+          <div class="col-tools">
+            <button id="tsDoctorBtn" class="btn btn-ghost btn-sm">检测环境</button>
+            <button id="tsSetupBtn" class="btn btn-primary btn-sm">安装转写引擎</button>
+          </div>
+        </div>
+
+        <div id="tsEngineStatus" class="ts-engine-status mono">—</div>
+
+        <div class="ts-options">
+          <label class="field-label" for="tsModel">识别模型</label>
+          <select id="tsModel" class="select">
+            <option value="tiny">tiny（最快）</option>
+            <option value="base">base（快速）</option>
+            <option value="small" selected>small（均衡，推荐）</option>
+            <option value="medium">medium（较准）</option>
+            <option value="large-v3">large-v3（最准）</option>
+          </select>
+
+          <label class="field-label" for="tsDevice">加速设备</label>
+          <select id="tsDevice" class="select">
+            <option value="auto" selected>自动（有 N 卡用 GPU，否则 CPU）</option>
+            <option value="cuda">仅 NVIDIA GPU</option>
+            <option value="cpu">仅 CPU</option>
+          </select>
+
+          <label class="field-label" for="tsLang">语言</label>
+          <select id="tsLang" class="select">
+            <option value="auto" selected>自动识别</option>
+            <option value="zh">中文</option>
+            <option value="en">英文</option>
+          </select>
+        </div>
+
+        <div class="ts-start-row">
+          <button id="tsStartBtn" class="btn btn-primary big">开始转写</button>
+          <button id="tsCancelBtn" class="btn btn-ghost hidden">取消</button>
+        </div>
+
+        <div id="tsProgressPanel" class="ts-progress-panel hidden">
+          <div id="tsWave" class="wavebar"></div>
+          <div id="tsStatus" class="import-status"></div>
+        </div>
+
+        <div id="tsTranscript" class="ts-transcript scroll"></div>
+      </section>
+
+      <!-- 转写历史 -->
+      <section class="col">
+        <div class="col-head">
+          <div>
+            <div class="eyebrow">History</div>
+            <h2>转写历史</h2>
+          </div>
+        </div>
+        <div id="tsHistory" class="list scroll"></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>设置</h3>
+      <div class="modal-fields">
+        <label class="field-label" for="setFfmpeg">ffmpeg 路径</label>
+        <input id="setFfmpeg" type="text" placeholder="ffmpeg" spellcheck="false" />
+
+        <label class="field-label" for="setBitrate">MP3 码率（kbps）</label>
+        <input id="setBitrate" type="number" min="64" max="320" step="32" />
+
+        <label class="field-label" for="setLibrary">媒体库目录</label>
+        <div class="row">
+          <input id="setLibrary" type="text" spellcheck="false" />
+          <button id="pickLibraryBtn" class="btn btn-ghost btn-sm">浏览…</button>
+        </div>
+
+        <label class="field-label" for="setSubfolder">导入子文件夹名</label>
+        <input id="setSubfolder" type="text" spellcheck="false" />
+      </div>
+      <div class="modal-actions">
+        <button id="settingsCancelBtn" class="btn btn-ghost">取消</button>
+        <button id="settingsSaveBtn" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

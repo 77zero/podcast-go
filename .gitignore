@@ -1,0 +1,14 @@
+node_modules/
+release/
+dist/
+.npm-cache/
+.electron-cache/
+.eb-cache/
+*.log
+.DS_Store
+
+# 本地工具与缓存（不提交）
+.transcribe-venv/
+.transcribe-test/
+__pycache__/
+*.pyc
