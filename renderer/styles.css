@@ -886,6 +886,8 @@ kbd {
 .ts-line { display: flex; gap: 12px; padding: 4px 0; line-height: 1.9; }
 .ts-line-time { flex: none; font-size: 11px; color: var(--ink-faint); min-width: 46px; text-align: right; letter-spacing: .3px; }
 .ts-line-text { font-size: 13.5px; color: var(--ink); letter-spacing: .4px; }
+/* 粗粒度分段正文：连续文本，便于阅读与喂给 AI 做分段总结 */
+.ts-block-text { font-size: 13.5px; color: var(--ink); letter-spacing: .4px; line-height: 1.9; white-space: pre-wrap; }
 
 @media (prefers-reduced-motion: reduce) {
   .wave-logo span { animation: none; }

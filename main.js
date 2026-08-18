@@ -10,10 +10,13 @@ const library = require('./lib/library');
 const feeds = require('./lib/feeds');
 const { TaskManager } = require('./lib/tasks');
 const { Transcriber } = require('./lib/transcriber');
+const logger = require('./lib/logger');
+const markdown = require('./lib/markdown');
 
 const tasks = new TaskManager();
 const transcriber = new Transcriber();
 let mainWindow = null;
+const transcribeBucket = new Map(); // input -> 进度 10% 桶，用于落盘限频
 
 const userDataDir = () => app.getPath('userData');
 const venvDir = () => path.join(userDataDir(), 'transcribe-venv');
@@ -75,6 +78,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  logger.init(path.join(app.getPath('userData'), 'logs'));
+  logger.info('app', '应用启动，版本 ' + app.getVersion());
   migrateLegacyData();
   createWindow();
   app.on('activate', () => {
@@ -86,10 +91,20 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// 任务进度广播给渲染进程
+// 任务进度广播给渲染进程 + 落盘日志（阶段切换与每 10% 变化才记，避免下载/转码高频刷屏）
+const taskLogCache = new Map(); // id -> { stage, bucket }
 tasks.on('update', (t) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('task:update', t);
+  }
+  const prev = taskLogCache.get(t.id) || {};
+  const bucket = t.percent == null ? -1 : Math.floor(t.percent / 10);
+  const stageChanged = prev.stage !== t.stage;
+  const bucketChanged = prev.bucket !== bucket;
+  const terminal = t.status === 'ready' || t.status === 'error' || t.status === 'cancelled';
+  if (stageChanged || bucketChanged || terminal) {
+    logger.info('task', `${t.id} ${t.status}/${t.stage} ${t.percent}% ${t.message || ''}${t.error ? ' ERR:' + t.error : ''}`);
+    taskLogCache.set(t.id, { stage: t.stage, bucket });
   }
 });
 
@@ -250,17 +265,28 @@ ipcMain.handle('import:start', async (_e, { files, targetDir, subfolder }) => {
   if (!dest) throw new Error('请先选择目标设备或文件夹');
   if (subfolder) dest = path.join(dest, String(subfolder));
   ensureLibrary(dest);
+  logger.info('import', `开始导入 ${files.length} 个文件 → ${dest}`);
 
   const controller = new AbortController();
-  const result = await importer.importFiles(files, dest, {
-    signal: controller.signal,
-    onProgress: (percent, info) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('import:progress', { percent, ...info });
-      }
-    },
-  });
-  return { dest, count: result.length };
+  const started = Date.now();
+  try {
+    const result = await importer.importFiles(files, dest, {
+      signal: controller.signal,
+      onProgress: (percent, info) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('import:progress', { percent, ...info });
+        }
+        if (info && info.current) {
+          logger.info('import', `进度 ${percent}% ${info.done}/${info.total} ${info.current}`);
+        }
+      },
+    });
+    logger.info('import', `导入完成 ${result.length} 个文件，用时 ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    return { dest, count: result.length };
+  } catch (err) {
+    logger.error('import', `导入失败：${err.message}`);
+    throw err;
+  }
 });
 
 // ---- 订阅持久化 ----
@@ -273,22 +299,91 @@ transcriber.on('update', (payload) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('transcribe:update', payload);
   }
+  // 落盘：done / error / setup 及状态切换、每 10% 进度变化
+  const p = payload;
+  if (p.type === 'done') {
+    logger.info('transcribe', `完成：${p.input} 设备=${p.deviceUsed} 模型=${p.model} 语言=${p.language} 时长=${p.duration}s 段数=${(p.segments || []).length}`);
+  } else if (p.type === 'error') {
+    logger.error('transcribe', `错误：${p.input} ${p.message}`);
+  } else if (p.type === 'cancel') {
+    logger.info('transcribe', `已取消：${p.input}`);
+  } else if (p.type === 'progress' && p.state) {
+    if (p.state === 'decoding') {
+      const bucket = Math.min(9, Math.floor((p.percent || 0) / 10));
+      if (bucket !== transcribeBucket.get(p.input)) {
+        transcribeBucket.set(p.input, bucket);
+        logger.info('transcribe', `进度 ${p.percent}% 输入=${p.input}`);
+      }
+    } else {
+      logger.info('transcribe', `状态 ${p.state} 输入=${p.input}`);
+    }
+  }
 });
+// 转写产物命名净化：文件名与目录去标点、非法字符，避免产物名携带原标题的标点。
+// 规则：保留中/日/韩文字、ASCII 字母数字、空格、点（.）、下划线、连字符，
+// 其余符号与标点（全角 ，。？！｜：；等、半角非法字符）一律清理；半角非法字符替换为下划线，其余替换为空格。
+// 注意：此清理规则必须与 renderer.transcriptPathFor 保持一致。
+function cleanTranscriptName(name) {
+  return String(name || '')
+    .replace(/[\\/:*?"<>|]/g, '_') // 半角非法字符 -> 下划线
+    .replace(/[^A-Za-z0-9._\-\s\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g, ' ') // 其余标点/符号 -> 空格
+    .replace(/\s+/g, ' ') // 压缩连续空白（含全角空格）
+    .trim()
+    .slice(0, 120) || 'untitled';
+}
+
+// 转写产物按音频管理：每个音频一个同名子目录，产物（json + md）放进该目录。
+// 目录名与文件名都经 cleanTranscriptName 净化（不再携带原标题的标点，后缀去掉 .transcript）。
+function transcriptOutputFor(input, explicit) {
+  if (explicit) return String(explicit);
+  const p = String(input);
+  const dir = p.replace(/[\\/][^\\/]*$/, '');
+  const raw = p.split(/[\\/]/).pop().replace(/\.(mp3|wav|m4a|m4b|aac|ogg|flac|opus|mp4)$/i, '');
+  const base = cleanTranscriptName(raw);
+  return dir + '\\' + base + '\\' + base + '.json';
+}
 ipcMain.handle('transcribe:start', async (_e, opts) => {
   const input = String((opts && opts.input) || '').trim();
   if (!input) throw new Error('缺少音频文件路径');
+  const output = transcriptOutputFor(input, opts && opts.output);
+  fs.mkdirSync(path.dirname(output), { recursive: true }); // 确保产物目录存在
   const s = settings.get();
-  const output = (opts && opts.output) || input.replace(/\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i, '.transcript.json');
-  return transcriber.start({
-    input,
-    output,
-    model: (opts && opts.model) || s.transcribeModel || 'small',
-    device: (opts && opts.device) || s.transcribeDevice || 'auto',
-    language: (opts && opts.language) || s.transcribeLanguage || 'auto',
-  });
+  try {
+    return await transcriber.start({
+      input,
+      output,
+      model: (opts && opts.model) || s.transcribeModel || 'small',
+      device: (opts && opts.device) || s.transcribeDevice || 'auto',
+      language: (opts && opts.language) || s.transcribeLanguage || 'auto',
+    });
+  } catch (err) {
+    logger.error('transcribe', `发起失败：${input} ${err.message}`);
+    throw err;
+  }
 });
 ipcMain.handle('transcribe:cancel', () => transcriber.cancel());
 ipcMain.handle('transcribe:status', () => transcriber.status());
+// 批量查询转写状态（「已转译/未转译」持久化）。
+// 权威依据就是磁盘上的转写产物：产物 json 存在即视为已转译，重启后据此恢复界面状态。
+// 返回 { [input]: { jsonPath, doneAt } | null }
+ipcMain.handle('transcribe:statuses', (_e, inputs) => {
+  const list = Array.isArray(inputs) ? inputs : [];
+  const out = {};
+  for (const raw of list) {
+    const input = String(raw || '');
+    if (typeof raw !== 'string' || !input.trim()) continue;
+    const jsonPath = transcriptOutputFor(input);
+    try {
+      const st = fs.statSync(jsonPath);
+      if (st.isFile() && st.size > 0) {
+        out[input] = { jsonPath, doneAt: st.mtimeMs };
+        continue;
+      }
+    } catch (_) { /* 无产物 -> 未转译 */ }
+    out[input] = null;
+  }
+  return out;
+});
 ipcMain.handle('transcribe:doctor', () => transcriber.doctor());
 ipcMain.handle('transcribe:setup', () => transcriber.setup());
 ipcMain.handle('transcribe:read', (_e, jsonPath) => {
@@ -298,4 +393,35 @@ ipcMain.handle('transcribe:read', (_e, jsonPath) => {
   } catch (err) {
     throw new Error('无法读取逐字稿：' + err.message);
   }
+});
+
+// 快速获取转写产物：打开 / 定位对应的 Markdown 逐字稿文件
+// 老版本产物可能只有 json（.txt 时代之前/未生成 .md），md 缺失时从 json 即时生成，
+// 避免「未找到 Markdown 文件」；json 是权威数据（含全部分段），生成规则与 python 版一致。
+function mdPathFor(jsonPath) {
+  return String(jsonPath).replace(/\.json$/, '.md');
+}
+function ensureMdFile(jsonPath) {
+  const mdPath = mdPathFor(jsonPath);
+  if (fs.existsSync(mdPath)) return mdPath;
+  try {
+    const data = JSON.parse(fs.readFileSync(String(jsonPath), 'utf8'));
+    const baseName = String(jsonPath).split(/[\\/]/).pop().replace(/\.(json)$/i, '');
+    const md = markdown.buildMarkdown(baseName, data);
+    fs.writeFileSync(mdPath, md, 'utf8');
+    logger.info('transcribe', `已从 json 补生成 md：${mdPath}`);
+    return mdPath;
+  } catch (err) {
+    throw new Error('未找到 Markdown 文件，且无法从 json 生成：' + err.message);
+  }
+}
+ipcMain.handle('transcribe:openMd', (_e, jsonPath) => {
+  const mdPath = ensureMdFile(jsonPath);
+  shell.openPath(mdPath);
+  return mdPath;
+});
+ipcMain.handle('transcribe:revealMd', (_e, jsonPath) => {
+  const mdPath = ensureMdFile(jsonPath);
+  shell.showItemInFolder(mdPath);
+  return mdPath;
 });

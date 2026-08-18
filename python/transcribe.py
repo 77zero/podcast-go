@@ -17,6 +17,15 @@ import os
 import sys
 import traceback
 
+# 强制 stdout/stderr 用 UTF-8：Windows 控制台默认 GBK，会把中文/JSON 行弄乱，
+# 进而导致主进程按 \n 解析错位、RESULT 行损坏（应用侧也会设 PYTHONIOENCODING 双保险）。
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def log(line):
     try:
@@ -74,6 +83,55 @@ def load_model(model_size, device, compute_type):
             except Exception:
                 pass
         raise
+
+
+BLOCK_SEC = 15 * 60  # 分段粒度：15 分钟一段，用于 AI 分段总结
+
+
+def fmt_clock(sec):
+    sec = int(sec or 0)
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    if h:
+        return "{:02d}:{:02d}:{:02d}".format(h, m, s)
+    return "{:02d}:{:02d}".format(m, s)
+
+
+def build_markdown(base_name, result, segments):
+    """生成适合 AI 分段总结的粗粒度 Markdown 逐字稿。
+
+    只保留每段的起止时间（用于分段/定位），段内为连续正文、不带逐句时间戳：
+    时间轴的唯一目的是让 AI 对长文本先分段总结、再汇总总结，
+    降低幻觉与焦点丢失，而不是提供精细逐句定位。
+    """
+    lines = ["# {} 逐字稿".format(base_name), ""]
+    lines.append("> 模型: {} · 设备: {} · 语言: {} · 时长: {:.1f} 秒 · 分段: {}".format(
+        result.get("model", "?"), result.get("device_used", "?"),
+        result.get("language", "?"), result.get("duration") or 0, len(segments)))
+    lines.append("")
+
+    # 按固定时长分组（段内保持顺序）
+    blocks = []
+    for s in segments:
+        bi = int(s["start"] // BLOCK_SEC)
+        if bi >= len(blocks):
+            blocks.extend([] for _ in range(bi + 1 - len(blocks)))
+        blocks[bi].append(s)
+
+    lang = (result.get("language") or "").split("-")[0].lower()
+    joiner = "" if lang in ("zh", "ja", "ko") else " "
+    idx = 1  # 连续编号，跳过没有内容的空时段，避免编号跳空
+    for blk in blocks:
+        if not blk:
+            continue
+        lines.append("## 第 {} 段 · {} – {}".format(
+            idx, fmt_clock(blk[0]["start"]), fmt_clock(blk[-1]["end"])))
+        idx += 1
+        lines.append("")
+        lines.append(joiner.join(s["text"] for s in blk))
+        lines.append("")
+    return "\n".join(lines)
 
 
 def transcribe(model, input_path, lang, beam):
@@ -192,13 +250,11 @@ def main():
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
 
-    # 生成带时间轴的 .txt
+    # 生成适合 AI 分段总结的 Markdown 逐字稿（粗粒度时间轴，段内不带逐句时间戳）
     try:
-        with open(base + ".txt", "w", encoding="utf-8") as f:
-            f.write("模型: {} · 设备: {} · 语言: {}\n".format(result["model"], device, result["language"]))
-            f.write("时长: {:.1f} 秒 · 分段: {}\n\n".format(duration or 0, len(segments)))
-            for s in segments:
-                f.write("[{:02d}:{:02d}] {}\n".format(int(s["start"]) // 60, int(s["start"]) % 60, s["text"]))
+        base_name = os.path.splitext(os.path.basename(args.input))[0]
+        with open(base + ".md", "w", encoding="utf-8") as f:
+            f.write(build_markdown(base_name, result, segments))
     except Exception:
         pass
 

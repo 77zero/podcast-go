@@ -118,6 +118,8 @@ async function init() {
     const tasks = await window.api.listTasks();
     for (const t of tasks) state.tasks.set(t.id, t);
     renderTasks();
+    // 恢复已转译/未转译状态与转写历史（基于磁盘产物，跨重启保持）
+    await restoreTranscribeStatuses();
 
     // 加载持久化的订阅（含剧集快照）
     const saved = await window.api.loadFeeds();
@@ -948,8 +950,26 @@ async function doImport() {
 /* ---------- 转写（faster-whisper） ---------- */
 const BLOCK_SEC = 15 * 60; // 15 分钟一段
 
+// 转写产物命名净化：与 main.js 的 cleanTranscriptName 保持一致。
+// 规则：保留中/日/韩文字、ASCII 字母数字、空格、点（.）、下划线、连字符，
+// 其余符号与标点（全角 ，。？！｜：；等、半角非法字符）一律清理；半角非法字符替换为下划线，其余替换为空格。
+function cleanTranscriptName(name) {
+  return String(name || '')
+    .replace(/[\\/:*?"<>|]/g, '_') // 半角非法字符 -> 下划线
+    .replace(/[^A-Za-z0-9._\-\s\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g, ' ') // 其余标点/符号 -> 空格
+    .replace(/\s+/g, ' ') // 压缩连续空白（含全角空格）
+    .trim()
+    .slice(0, 120) || 'untitled';
+}
+
+// 转写产物按音频管理：每个音频一个同名子目录，产物（json + md）放进该目录。
+// 注意：此推导规则必须与 main.js 的 transcriptOutputFor 保持一致。
 function transcriptPathFor(mp3Path) {
-  return String(mp3Path).replace(/\.(mp3|wav|m4a|aac|ogg|flac|opus)$/i, '.transcript.json');
+  const p = String(mp3Path);
+  const dir = p.replace(/[\\/][^\\/]*$/, '');
+  const raw = p.split(/[\\/]/).pop().replace(/\.(mp3|wav|m4a|m4b|aac|ogg|flac|opus|mp4)$/i, '');
+  const base = cleanTranscriptName(raw);
+  return dir + '\\' + base + '\\' + base + '.json';
 }
 
 // 从任务 / 媒体库发起转写：切到转写页并开始
@@ -1137,10 +1157,43 @@ function renderTsLibrary() {
   }
 }
 
-function pushTsHistory(input, jsonPath) {
+function pushTsHistory(input, jsonPath, doneAt) {
   if (!state.tsHistory.some((h) => h.path === input)) {
-    state.tsHistory.push({ path: input, name: String(input).split(/[\\/]/).pop() || input, jsonPath, doneAt: Date.now() });
+    state.tsHistory.push({ path: input, name: String(input).split(/[\\/]/).pop() || input, jsonPath, doneAt: doneAt || Date.now() });
   }
+}
+
+// 恢复已转译状态（「已转译/未转译」跨重启持久化）。
+// 转写状态此前只在内存里（state.transcribes / tsHistory），重启即丢：
+// 启动时按磁盘上的转写产物批量扫描媒体库与任务输出，JSON 存在即为已转译，
+// 让媒体库/任务列表的按钮与转写历史在重启后保持正确。
+async function restoreTranscribeStatuses() {
+  const inputs = new Set();
+  for (const f of state.library) inputs.add(f.path);
+  for (const t of state.tasks.values()) {
+    if (t.outputPath) inputs.add(t.outputPath);
+  }
+  if (inputs.size === 0) return;
+  let map = {};
+  try {
+    map = await window.api.transcribeStatuses([...inputs]);
+  } catch (_) {
+    return; // 扫描失败不阻塞启动，按钮按未转译显示即可
+  }
+  const restored = [];
+  for (const [input, info] of Object.entries(map)) {
+    if (!info) continue;
+    const rec = state.transcribes.get(input);
+    if (rec && (rec.state === 'running' || rec.state === 'loading')) continue; // 不覆盖进行中
+    state.transcribes.set(input, { state: 'done', jsonPath: info.jsonPath, percent: 100, segments: null, message: '' });
+    restored.push({ input, jsonPath: info.jsonPath, doneAt: info.doneAt });
+  }
+  if (restored.length === 0) return;
+  restored.sort((a, b) => a.doneAt - b.doneAt); // 历史按完成时间先后排列
+  for (const r of restored) pushTsHistory(r.input, r.jsonPath, r.doneAt);
+  renderLibrary();
+  renderTasks();
+  renderTsHistory();
 }
 
 function renderTsHistory() {
@@ -1229,6 +1282,10 @@ async function showTranscript(input, jsonPath) {
     el('div', { class: 'ts-view-meta mono',
       text: `模型 ${data.model || '?'} · 设备 ${data.device_used || '?'} · 语言 ${data.language || '?'} · ${segments.length} 段` }),
     el('div', { class: 'ts-view-actions' },
+      el('button', { class: 'btn btn-primary btn-sm', text: '打开 MD 文件',
+        onclick: () => openMdFile(jsonPath) }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: '在文件夹显示',
+        onclick: () => revealMdFile(jsonPath) }),
       el('button', { class: 'btn btn-ghost btn-sm', text: '复制全文',
         onclick: () => copyTranscriptText() }),
     ),
@@ -1240,33 +1297,36 @@ async function showTranscript(input, jsonPath) {
     return;
   }
 
-  // 按 15 分钟分组
+  // 按 15 分钟粗粒度分段（时间轴只用于分段定位，段内为连续正文，不带逐句时间戳）
   const blocks = [];
   for (const s of segments) {
     const bi = Math.floor(s.start / BLOCK_SEC);
-    if (!blocks[bi]) blocks[bi] = { start: bi * BLOCK_SEC, end: (bi + 1) * BLOCK_SEC, lines: [] };
-    blocks[bi].lines.push(s);
+    if (!blocks[bi]) blocks[bi] = { start: s.start, end: s.end, lines: [] };
+    const b = blocks[bi];
+    b.lines.push(s);
+    b.end = s.end; // 块内按序追加，结束时间随最后一句更新
   }
 
   const scroll = el('div', { class: 'ts-scroll' });
-  for (const b of blocks) {
+  let blockNo = 1; // 连续编号，与 .md 文件一致
+  blocks.forEach((b) => {
+    if (!b) return;
     const chars = b.lines.reduce((n, s) => n + s.text.length, 0);
+    const text = b.lines.map((s) => s.text).join(' ');
     const block = el('div', { class: 'ts-block' },
       el('div', { class: 'ts-block-head' },
-        el('span', { class: 'ts-block-time', text: `${fmtClock(b.start)} – ${fmtClock(b.end)}` }),
+        el('span', { class: 'ts-block-time', text: `第 ${blockNo} 段 · ${fmtClock(b.start)} – ${fmtClock(b.end)}` }),
         el('span', { class: 'ts-block-stats mono', text: `${b.lines.length} 句 · ${chars} 字` }),
         el('button', { class: 'ts-copy-block', text: '复制本段',
           onclick: () => copyBlock(b) }),
       ),
       el('div', { class: 'ts-lines' },
-        ...b.lines.map((s) => el('div', { class: 'ts-line' },
-          el('span', { class: 'ts-line-time mono', text: fmtClock(s.start) }),
-          el('span', { class: 'ts-line-text', text: s.text }),
-        )),
+        el('div', { class: 'ts-block-text', text }),
       ),
     );
+    blockNo += 1;
     scroll.append(block);
-  }
+  });
   box.append(scroll);
 }
 
@@ -1279,7 +1339,8 @@ function fmtClock(sec) {
 }
 
 function blockText(b) {
-  return b.lines.map((s) => `[${fmtClock(s.start)}] ${s.text}`).join('\n');
+  // 段内连续正文（与 .md 文件一致，不带逐句时间戳）
+  return b.lines.map((s) => s.text).join(' ');
 }
 
 function copyBlock(b) {
@@ -1291,17 +1352,39 @@ function copyBlock(b) {
 }
 
 async function copyTranscriptText() {
-  // 从当前打开的逐字稿里取全文
+  // 从当前打开的逐字稿里取全文（与 .md 一致的连续正文）
   const jsonPath = currentTranscriptJsonPath;
   if (!jsonPath) return;
   try {
     const data = await window.api.readTranscript(jsonPath);
-    const text = (data.segments || []).map((s) => `[${fmtClock(s.start)}] ${s.text}`).join('\n');
+    const text = (data.segments || []).map((s) => s.text).join(' ');
     navigator.clipboard.writeText(text).then(
       () => toast('已复制全文'),
       () => toast('复制失败', true),
     );
   } catch (_) { toast('读取失败', true); }
+}
+
+/* ---- 快速获取转写产物（Markdown 文件） ---- */
+function mdPathFor(jsonPath) {
+  return String(jsonPath).replace(/\.json$/, '.md');
+}
+
+async function openMdFile(jsonPath) {
+  try {
+    const p = await window.api.openTranscriptMd(jsonPath);
+    toast('已打开：' + p);
+  } catch (err) {
+    toast('打开失败：' + err.message, true);
+  }
+}
+
+async function revealMdFile(jsonPath) {
+  try {
+    await window.api.revealTranscriptMd(jsonPath);
+  } catch (err) {
+    toast('定位失败：' + err.message, true);
+  }
 }
 
 /* ---- 转写任务控制 ---- */

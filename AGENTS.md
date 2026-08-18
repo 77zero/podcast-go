@@ -24,12 +24,14 @@ Windows 桌面工具：订阅播客 → 下载转码为 MP3 → 一键导入随�
 - `automated`：`npm run dist` 打包通过（及既有测试）。
 - `live-page`：用户本机运行主流程（搜索→下载→转码→导入）手动验收。
 - 交付时报告各层级状态；缺失用户在场用 `partial`，不扩张完成结论。
+- **打包约定**：每次修改后直接打包 `win-unpacked`（`npm run pack`，即 electron-builder --dir，
+  产物在 `release/win-unpacked/`），用户直接运行其中的 exe 验证；仅在用户要求分发安装包时才跑 `npm run dist`。
 
 ## Gotchas
 
 | 情况 | 规则 |
 |---|---|
-| （待补充——首个工作包验证后回填） | |
+| 转写产物存放 | 按音频管理：每个音频一个同名子目录，产物（json + md）放进该目录；**目录名与文件名做净化**（清全角标点/非法字符，不再带 `.transcript` 前缀）；规则见 `renderer.transcriptPathFor` / `main.js transcriptOutputFor`（两处必须一致，另见 `scripts/migrate-transcript-naming.js`） |
 
 ## Agent skills
 

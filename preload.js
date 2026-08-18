@@ -35,9 +35,12 @@ contextBridge.exposeInMainWorld('api', {
   startTranscribe: (opts) => ipcRenderer.invoke('transcribe:start', opts),
   cancelTranscribe: () => ipcRenderer.invoke('transcribe:cancel'),
   transcribeStatus: () => ipcRenderer.invoke('transcribe:status'),
+  transcribeStatuses: (inputs) => ipcRenderer.invoke('transcribe:statuses', inputs),
   transcribeDoctor: () => ipcRenderer.invoke('transcribe:doctor'),
   transcribeSetup: () => ipcRenderer.invoke('transcribe:setup'),
   readTranscript: (jsonPath) => ipcRenderer.invoke('transcribe:read', jsonPath),
+  openTranscriptMd: (jsonPath) => ipcRenderer.invoke('transcribe:openMd', jsonPath),
+  revealTranscriptMd: (jsonPath) => ipcRenderer.invoke('transcribe:revealMd', jsonPath),
 
   // 事件
   onTaskUpdate: (cb) => ipcRenderer.on('task:update', (_e, data) => cb(data)),
