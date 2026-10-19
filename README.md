@@ -53,7 +53,7 @@ podcast-go/
 
 普通用户不需要装 Node.js，直接下载安装包即可：
 
-1. 下载：见本仓库的 Releases 页面，选择 `播客随身听-Setup-<版本>-x64.exe`（安装版）或 `播客随身听-Portable-<版本>-x64.exe`（便携版，双击即用）。
+1. 下载：见本仓库的 Releases 页面，选择 `PodcastGo-Setup-0.2.0-x64.exe`（安装版）或 `PodcastGo-Portable-0.2.0-x64.exe`（便携版，双击即用）。
 2. 安装 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) 并加入 `PATH`；不在 PATH 时，可在应用内「设置」里指定 ffmpeg 完整路径。
 3. 启动应用，按下文「使用流程」操作。需要 AI 逐字稿时，在「转写」页点「安装转写引擎」。
 

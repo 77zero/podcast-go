@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "订阅播客、下载转码为 MP3、一键导入设备随身收听；内置 AI 逐字稿。Windows 桌面工具",
   "main": "main.js",
-  "author": "you",
+  "author": "77zero",
   "license": "MIT",
   "scripts": {
     "start": "node scripts/start.js",
@@ -23,6 +23,7 @@
   "build": {
     "appId": "com.local.podcastgo",
     "productName": "播客随身听",
+    "copyright": "Copyright © 2026 77zero",
     "directories": {
       "output": "release"
     },
@@ -57,10 +58,10 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "shortcutName": "播客随身听",
-      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+      "artifactName": "PodcastGo-Setup-${version}-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
+      "artifactName": "PodcastGo-Portable-${version}-${arch}.${ext}"
     }
   }
 }
