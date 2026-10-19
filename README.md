@@ -19,25 +19,47 @@
 ## 目录结构
 
 ```
-podcast-mp3-tool/
+podcast-go/
 ├── main.js              # Electron 主进程（IPC、任务调度）
 ├── preload.js           # contextBridge 暴露的安全 API
 ├── lib/
 │   ├── rss.js           # RSS 订阅解析
+│   ├── feeds.js         # 订阅列表读写
 │   ├── download.js      # 音频下载（流式，带进度）
 │   ├── convert.js       # ffmpeg 转 MP3（带进度）
 │   ├── drives.js        # 枚举 Windows 磁盘 / 可移动磁盘
 │   ├── import.js        # 复制文件到设备
 │   ├── library.js       # 媒体库 MP3 扫描
 │   ├── settings.js      # 设置读写
-│   └── tasks.js         # 下载→转码 任务队列
-└── renderer/
-    ├── index.html       # 界面结构
-    ├── styles.css       # 界面样式
-    └── renderer.js      # 界面逻辑
+│   ├── tasks.js         # 下载→转码 任务队列
+│   ├── transcriber.js   # 调用 Python 转写引擎
+│   ├── markdown.js      # 生成 Markdown 逐字稿
+│   └── logger.js        # 运行日志
+├── python/
+│   └── transcribe.py    # faster-whisper 转写脚本
+├── renderer/
+│   ├── index.html       # 界面结构
+│   ├── styles.css       # 界面样式
+│   └── renderer.js      # 界面逻辑
+├── scripts/
+│   ├── start.js         # 启动器（清理干扰 Electron 的环境变量）
+│   ├── make-icon.js     # 由 build/icon.svg 生成图标
+│   └── migrate-transcript-naming.js  # 旧版转写产物命名一次性迁移
+├── build/               # 应用图标
+└── docs/adr/            # 架构决策记录
 ```
 
-## 运行
+## 下载与使用
+
+普通用户不需要装 Node.js，直接下载安装包即可：
+
+1. 下载：见本仓库的 Releases 页面，选择 `播客随身听-Setup-<版本>-x64.exe`（安装版）或 `播客随身听-Portable-<版本>-x64.exe`（便携版，双击即用）。
+2. 安装 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) 并加入 `PATH`；不在 PATH 时，可在应用内「设置」里指定 ffmpeg 完整路径。
+3. 启动应用，按下文「使用流程」操作。需要 AI 逐字稿时，在「转写」页点「安装转写引擎」。
+
+仅支持 Windows x64。
+
+## 从源码运行
 
 前置条件：
 
@@ -45,7 +67,8 @@ podcast-mp3-tool/
 - [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) 已安装并在 `PATH` 中（可用 `ffmpeg -version` 验证）；若不在 PATH，可在应用内「设置」里指定完整路径。
 
 ```bash
-cd <本地路径>
+git clone https://github.com/77zero/podcast-go.git
+cd podcast-go
 npm install        # 首次安装依赖（会下载 Electron）
 npm start          # 启动应用
 ```
